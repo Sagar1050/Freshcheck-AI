@@ -1,0 +1,13 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+instance/
+# Additional environment files
+.env.*
+
+# IDE settings
+.vscode/
+
+# Generated verification report
+freshcheck_report.json
