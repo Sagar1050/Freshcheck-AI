@@ -11,12 +11,66 @@ load_dotenv()
 BIFROST_URL = os.getenv(
     "BIFROST_BASE_URL",
     "http://localhost:8080"
-)
+).rstrip("/")
 
 BIFROST_MODEL = os.getenv(
     "BIFROST_MODEL",
     "gemini/gemini-3.5-flash-lite"
 )
+
+
+def normalize_ai_content(content):
+    """Convert different AI response formats into a string."""
+
+    if isinstance(content, list):
+        parts = []
+
+        for item in content:
+            if isinstance(item, dict):
+                parts.append(item.get("text", ""))
+            else:
+                parts.append(str(item))
+
+        content = "".join(parts)
+
+    elif isinstance(content, dict):
+        if "text" in content:
+            content = content["text"]
+        else:
+            content = json.dumps(content, ensure_ascii=False)
+
+    if not isinstance(content, str):
+        content = str(content)
+
+    return content.strip()
+
+
+def parse_json_response(content):
+    """Normalize AI output and safely parse JSON."""
+
+    content = normalize_ai_content(content)
+
+    # Remove Markdown code fences.
+    if content.startswith("```"):
+        lines = content.splitlines()
+
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+
+        content = "\n".join(lines).strip()
+
+    # Extract JSON if extra text surrounds the response.
+    if not content.startswith("{"):
+        start = content.find("{")
+        end = content.rfind("}")
+
+        if start != -1 and end != -1 and end > start:
+            content = content[start:end + 1]
+
+    return json.loads(content)
 
 
 def verify_claim(claim, evidence):
@@ -75,15 +129,6 @@ The claim describes something that may have been correct
 previously, but newer evidence indicates that the
 information has changed.
 
-Examples:
-- "Python 3.12 was released on October 2, 2023."
-  This is a historical claim. Verify the stated date.
-
-- "Python 3.12 is the latest stable Python version."
-  This is a time-sensitive claim. If newer stable versions
-  exist, classify it as Potentially Outdated when the
-  evidence indicates the information has changed.
-
 Insufficient Evidence:
 The supplied evidence is not enough to determine whether
 the claim is accurate or current.
@@ -98,7 +143,7 @@ SCORING GUIDANCE:
 
 EVIDENCE RULES:
 - Return only URLs that appear in the supplied evidence.
-- Include the exact URL strings.
+- Include exact URL strings.
 - Include sources that directly support your explanation.
 - Do not invent URLs.
 - If no source supports your verdict, return an empty list.
@@ -108,7 +153,7 @@ Return ONLY valid JSON in this exact format:
 {{
   "verdict": "Supported",
   "freshness_score": 90,
-  "explanation": "Brief explanation based on the supplied evidence.",
+  "explanation": "Brief explanation based on supplied evidence.",
   "suggested_correction": "",
   "evidence_used": [
     "https://example.com/source"
@@ -150,32 +195,18 @@ For Insufficient Evidence, do not invent a correction.
     response.raise_for_status()
 
     result = response.json()
-    content = result["choices"][0]["message"]["content"]
 
-# Handle text returned as a list of content blocks.
-    if isinstance(content, list):
-        content = "".join(
-        item.get("text", "") if isinstance(item, dict)
-        else str(item)
-        for item in content
-    )
+    try:
+        content = result["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as error:
+        raise ValueError(
+            "Unexpected Bifrost response structure."
+        ) from error
 
-# Handle unexpected dictionary format.
-    elif isinstance(content, dict):
-        content = content.get("text", str(content))
+    verification = parse_json_response(content)
 
-# Ensure the response is a string.
-    if not isinstance(content, str):
-        content = str(content)
-
-    content = content.strip()
-
-# Remove Markdown code fences if present.
-    if content.startswith("```"):
-        content = content.split("\n", 1)[1]
-    content = content.rsplit("```", 1)[0].strip()
-
-    verification = json.loads(content)
+    if not isinstance(verification, dict):
+        raise ValueError("AI returned JSON that is not an object.")
 
     # Validate verdict.
     allowed_verdicts = {
@@ -198,18 +229,19 @@ For Insufficient Evidence, do not invent a correction.
     ):
         raise ValueError("Gemini returned an invalid freshness score.")
 
-    # Validate explanation and correction.
+    # Validate explanation.
     if not isinstance(verification.get("explanation"), str):
         raise ValueError("Gemini returned an invalid explanation.")
 
+    # Validate suggested correction.
     if not isinstance(verification.get("suggested_correction"), str):
         verification["suggested_correction"] = ""
 
-    # Match Gemini's selected URLs against actual Tavily results.
+    # Match AI-selected URLs against actual Tavily results.
     evidence_by_url = {
         item.get("url"): item
         for item in evidence
-        if item.get("url")
+        if isinstance(item, dict) and item.get("url")
     }
 
     selected_urls = verification.get("evidence_used", [])
@@ -220,6 +252,7 @@ For Insufficient Evidence, do not invent a correction.
     verified_sources = []
 
     for selected_url in selected_urls:
+
         if not isinstance(selected_url, str):
             continue
 
@@ -229,7 +262,10 @@ For Insufficient Evidence, do not invent a correction.
             verified_sources.append({
                 "url": source.get("url", ""),
                 "title": source.get("title", ""),
-                "source_type": source.get("source_type", "Other"),
+                "source_type": source.get(
+                    "source_type",
+                    "Other"
+                ),
                 "credibility_level": source.get(
                     "credibility_level",
                     "Unverified"
@@ -258,4 +294,9 @@ if __name__ == "__main__":
     result = verify_claim(test_claim, evidence)
 
     print("\n========== FRESHCHECK REPORT ==========")
-    print(json.dumps(result, indent=4, ensure_ascii=False))
+
+    print(json.dumps(
+        result,
+        indent=4,
+        ensure_ascii=False
+    ))

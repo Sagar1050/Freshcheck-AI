@@ -7,16 +7,32 @@ from claim_verifier import verify_claim
 
 
 def clean_json(content):
-    """Remove Markdown code fences and parse JSON."""
+    """Safely normalize AI output and parse JSON."""
+
+    # Handle AI responses returned as a list
+    if isinstance(content, list):
+        content = "".join(
+            item.get("text", "") if isinstance(item, dict)
+            else str(item)
+            for item in content
+        )
+
+    # Handle AI responses returned as a dictionary
+    elif isinstance(content, dict):
+        content = content.get("text", str(content))
+
+    # Ensure content is a string
+    if not isinstance(content, str):
+        content = str(content)
 
     content = content.strip()
 
+    # Remove Markdown code fences if present
     if content.startswith("```"):
         content = content.split("\n", 1)[1]
         content = content.rsplit("```", 1)[0].strip()
 
     return json.loads(content)
-
 
 def run_freshcheck(answer):
 
