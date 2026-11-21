@@ -150,14 +150,30 @@ For Insufficient Evidence, do not invent a correction.
     response.raise_for_status()
 
     result = response.json()
-
     content = result["choices"][0]["message"]["content"]
+
+# Handle text returned as a list of content blocks.
+    if isinstance(content, list):
+        content = "".join(
+        item.get("text", "") if isinstance(item, dict)
+        else str(item)
+        for item in content
+    )
+
+# Handle unexpected dictionary format.
+    elif isinstance(content, dict):
+        content = content.get("text", str(content))
+
+# Ensure the response is a string.
+    if not isinstance(content, str):
+        content = str(content)
+
     content = content.strip()
 
-    # Remove Markdown code fences if present.
+# Remove Markdown code fences if present.
     if content.startswith("```"):
         content = content.split("\n", 1)[1]
-        content = content.rsplit("```", 1)[0].strip()
+    content = content.rsplit("```", 1)[0].strip()
 
     verification = json.loads(content)
 
